@@ -373,6 +373,7 @@ fn optional_usage_is_unknown_and_no_stale_metadata_on_skipped_invocation() {
     assert_eq!(r.core.invocations, 0);
     assert!(r.metadata.is_none());
     assert!(r.adapter_error.is_none());
+    assert!(r.prediction.is_none());
     assert_eq!(server.worker.join().unwrap(), 1);
 }
 #[test]
@@ -563,4 +564,347 @@ fn response_with_unknown_usage() -> String {
     let mut body = response();
     body["usage"] = json!({"input_tokens":null});
     body.to_string()
+}
+
+fn predicate_request() -> PredicateRequest {
+    PredicateRequest {
+        question_id: "category".into(),
+        context: "A message".into(),
+        instructions: "Is it a greeting?".into(),
+        true_description: Some("A greeting".into()),
+        false_description: Some("Anything else".into()),
+    }
+}
+fn score_request() -> ScoreRequest {
+    ScoreRequest {
+        question_id: "category".into(),
+        context: "A message".into(),
+        instructions: "Rate urgency".into(),
+        levels: vec!["low".into(), "medium".into(), "high".into()],
+    }
+}
+fn noul_response(p: f64) -> Value {
+    json!({"model":"jev-returned","answers":{"category":{"type":"noul","noul":p}},"usage":{"input_tokens":10,"output_tokens":1}})
+}
+fn score_response() -> Value {
+    json!({"model":"jev-returned","answers":{"category":{"type":"score","score":1.7,"confidence":0.9,"legend":{"2":"high","0":"low","1":"medium"},"probabilities":{"2":0.8,"0":0.1,"1":0.1}}}})
+}
+#[test]
+fn noul_maps_native_probability_and_boolean_policy_without_confidence() {
+    for (p, expected) in [
+        (0.98, Decision::Accepted(true)),
+        (0.02, Decision::Accepted(false)),
+        (0.5, Decision::Abstained(Reason::PolicyRejected)),
+    ] {
+        let server = mock(
+            200,
+            noul_response(p).to_string(),
+            "X-TypeSafe-Request-Id: noul-42\r\n",
+            Duration::ZERO,
+            false,
+        );
+        let mut client = JevClient::new(config(&server.endpoint)).unwrap();
+        let report = client.decide_noul(
+            &predicate_request(),
+            &PredicatePolicy::default(),
+            Observation::default,
+        );
+        assert_eq!(report.core.decision, expected);
+        assert_eq!(report.core.rules.len(), 9);
+        assert_eq!(report.adapter_error, None);
+        assert!(
+            matches!(report.prediction, Some(JevPrediction::Scalar(ScalarPrediction::Predicate {probability_true,..})) if probability_true == p)
+        );
+        assert_eq!(
+            report.metadata.unwrap().typesafe_request_id.as_deref(),
+            Some("noul-42")
+        );
+        let (_, payload) = server.seen.recv().unwrap();
+        assert_eq!(
+            payload,
+            json!({"model":"jev-requested","state":"A message","questions":{"category":{"type":"noul","instructions":"Is it a greeting?","criteria":{"true":"A greeting","false":"Anything else"}}}})
+        );
+        assert_eq!(server.worker.join().unwrap(), 1);
+    }
+}
+#[test]
+fn score_maps_ordered_rubric_and_native_expected_score() {
+    let server = mock(
+        200,
+        score_response().to_string(),
+        "X-Request-Id: score-gateway\r\n",
+        Duration::ZERO,
+        false,
+    );
+    let mut client = JevClient::new(config(&server.endpoint)).unwrap();
+    let report = client.decide_score(
+        &score_request(),
+        &ScorePolicy {
+            min_score: Some(1.5),
+            min_confidence: Some(0.8),
+            ..Default::default()
+        },
+        Observation::default,
+    );
+    assert_eq!(report.core.decision, Decision::Accepted(1.7));
+    assert_eq!(report.core.rules.len(), 9);
+    assert_eq!(
+        report.metadata.unwrap().gateway_request_id.as_deref(),
+        Some("score-gateway")
+    );
+    let (_, payload) = server.seen.recv().unwrap();
+    assert_eq!(
+        payload,
+        json!({"model":"jev-requested","state":"A message","questions":{"category":{"type":"score","instructions":"Rate urgency","criteria":["low","medium","high"]}}})
+    );
+    assert_eq!(server.worker.join().unwrap(), 1);
+}
+#[test]
+fn scalar_wrong_kinds_missing_values_and_invalid_legends_fail_closed() {
+    let mut cases = vec![];
+    for kind in 0..4 {
+        let mut body = noul_response(0.98);
+        match kind {
+            0 => {
+                body["answers"]["category"]["noul"] = "0.98".into();
+            }
+            1 => {
+                body["answers"]["category"]["type"] = "predicate".into();
+            }
+            2 => {
+                body["answers"]["category"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("noul");
+            }
+            _ => {
+                body["answers"] = json!({"wrong":body["answers"]["category"].clone()});
+            }
+        }
+        cases.push((
+            ScalarRequest::Predicate(predicate_request()),
+            body.to_string(),
+        ));
+    }
+    for kind in 0..7 {
+        let mut body = score_response();
+        match kind {
+            0 => {
+                body["answers"]["category"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("confidence");
+            }
+            1 => {
+                body["answers"]["category"]["legend"]["0"] = "wrong".into();
+            }
+            2 => {
+                body["answers"]["category"]["legend"]["3"] = "extra".into();
+            }
+            3 => {
+                body["answers"]["category"]["probabilities"] = json!({"0":0.1,"1":0.1,"3":0.8});
+            }
+            4 => {
+                body["answers"]["category"]["score"] = "1.7".into();
+            }
+            5 => {
+                body["answers"]["extra"] = body["answers"]["category"].clone();
+            }
+            _ => {
+                body["answers"]["category"]["probabilities"]["0"] = false.into();
+            }
+        }
+        cases.push((ScalarRequest::Score(score_request()), body.to_string()));
+    }
+    cases.push((ScalarRequest::Score(score_request()),r#"{"model":"jev","answers":{"category":{"type":"score","score":1.7,"confidence":0.9,"legend":{"0":"low","0":"low","1":"medium","2":"high"},"probabilities":{"0":0.1,"1":0.1,"2":0.8}}}}"#.into()));
+    cases.push((
+        ScalarRequest::Predicate(predicate_request()),
+        r#"{"model":"jev","answers":{"category":{"type":"noul","noul":0.9,"noul":0.98}}}"#.into(),
+    ));
+    for (request, body) in cases {
+        let server = mock(200, body, "", Duration::ZERO, false);
+        let mut client = JevClient::new(config(&server.endpoint)).unwrap();
+        assert!(matches!(
+            client.invoke_scalar(&request),
+            ScalarEvent::Failed(BackendFailure::MalformedResponse)
+        ));
+        assert_eq!(server.worker.join().unwrap(), 1);
+    }
+}
+#[test]
+fn scalar_numeric_errors_reach_core_specifications() {
+    for p in [-0.1, 1.1] {
+        let server = mock(200, noul_response(p).to_string(), "", Duration::ZERO, false);
+        let mut client = JevClient::new(config(&server.endpoint)).unwrap();
+        let r = client.decide_predicate(
+            &predicate_request(),
+            &PredicatePolicy::default(),
+            Observation::default,
+        );
+        assert_eq!(r.core.decision, Decision::Failed(Failure::OutputValidation));
+        assert_eq!(
+            r.core.rules.last().unwrap().rule,
+            "ScalarProbabilitiesValid"
+        );
+        assert_eq!(r.adapter_error, None);
+        assert_eq!(server.worker.join().unwrap(), 1);
+    }
+    for (field, v, rule) in [
+        ("score", 1.8, "ScalarValueConsistent"),
+        ("confidence", -0.1, "ScalarConfidenceValid"),
+    ] {
+        let mut body = score_response();
+        body["answers"]["category"][field] = v.into();
+        let server = mock(200, body.to_string(), "", Duration::ZERO, false);
+        let r = JevClient::new(config(&server.endpoint))
+            .unwrap()
+            .decide_score(
+                &score_request(),
+                &ScorePolicy::default(),
+                Observation::default,
+            );
+        assert_eq!(r.core.decision, Decision::Failed(Failure::OutputValidation));
+        assert_eq!(r.core.rules.last().unwrap().rule, rule);
+        assert_eq!(r.adapter_error, None);
+        assert!(r.metadata.is_some());
+        assert_eq!(server.worker.join().unwrap(), 1);
+    }
+}
+#[test]
+fn scalar_operational_failures_do_not_select_fallback() {
+    for (status, failure) in [
+        (401, Failure::Authentication),
+        (422, Failure::UnsupportedCapability),
+        (504, Failure::TimedOut),
+    ] {
+        let server = mock(
+            status,
+            "secret error body".into(),
+            "",
+            Duration::ZERO,
+            false,
+        );
+        let p = PredicatePolicy {
+            fallback: Some(ValueFallback {
+                value: false,
+                triggers: vec![Reason::PolicyRejected, Reason::ProviderRefusal],
+            }),
+            ..Default::default()
+        };
+        let r = JevClient::new(config(&server.endpoint))
+            .unwrap()
+            .decide_noul(&predicate_request(), &p, Observation::default);
+        assert_eq!(r.core.decision, Decision::Failed(failure));
+        assert_eq!(r.adapter_error, Some(Error::Http(status)));
+        assert!(r.metadata.is_none());
+        assert_eq!(server.worker.join().unwrap(), 1);
+    }
+}
+#[test]
+fn scalar_size_limits_and_json_state_reject_before_connecting() {
+    for request in [
+        ScalarRequest::Predicate(predicate_request()),
+        ScalarRequest::Score(score_request()),
+    ] {
+        let mut c = config("http://127.0.0.1:1/");
+        c.max_request_bytes = 80;
+        let mut client = JevClient::new(c).unwrap();
+        assert!(matches!(
+            client.invoke_scalar(&request),
+            ScalarEvent::Failed(BackendFailure::UnsupportedCapability)
+        ));
+    }
+    let mut c = config("http://127.0.0.1:1/");
+    c.state_encoding = StateEncoding::Json;
+    let mut r = predicate_request();
+    r.context = r#"{"text":1,"text":2}"#.into();
+    let report = JevClient::new(c).unwrap().decide_noul(
+        &r,
+        &PredicatePolicy::default(),
+        Observation::default,
+    );
+    assert_eq!(report.adapter_error, Some(Error::InvalidRequest));
+}
+#[test]
+fn scalar_json_state_and_absent_predicate_criteria_are_explicit() {
+    let server = mock(
+        200,
+        noul_response(0.98).to_string(),
+        "",
+        Duration::ZERO,
+        false,
+    );
+    let mut c = config(&server.endpoint);
+    c.state_encoding = StateEncoding::Json;
+    let mut r = predicate_request();
+    r.context = r#"{"message":"Hello"}"#.into();
+    r.true_description = None;
+    r.false_description = None;
+    let report = JevClient::new(c).unwrap().decide_predicate(
+        &r,
+        &PredicatePolicy::default(),
+        Observation::default,
+    );
+    assert_eq!(report.core.decision, Decision::Accepted(true));
+    let (_, body) = server.seen.recv().unwrap();
+    assert_eq!(body["state"], json!({"message":"Hello"}));
+    assert!(body["questions"]["category"].get("criteria").is_none());
+    assert_eq!(server.worker.join().unwrap(), 1);
+}
+#[test]
+fn metadata_does_not_leak_between_scalar_and_choice_operations() {
+    let server = mock(200, score_response().to_string(), "", Duration::ZERO, false);
+    let mut client = JevClient::new(config(&server.endpoint)).unwrap();
+    let r = client.decide_score(
+        &score_request(),
+        &ScorePolicy::default(),
+        Observation::default,
+    );
+    assert!(r.metadata.is_some());
+    let cancelled = || Observation {
+        cancelled: true,
+        expired: false,
+    };
+    let r = client.decide_noul(&predicate_request(), &PredicatePolicy::default(), cancelled);
+    assert_eq!(r.core.decision, Decision::Cancelled);
+    assert!(r.metadata.is_none());
+    assert!(r.adapter_error.is_none());
+    assert!(r.prediction.is_none());
+    let r = client.decide(&request(), &Policy::default(), cancelled);
+    assert_eq!(r.core.decision, Decision::Cancelled);
+    assert!(r.metadata.is_none());
+    assert!(r.adapter_error.is_none());
+    assert!(r.prediction.is_none());
+    assert_eq!(server.worker.join().unwrap(), 1);
+}
+#[test]
+fn scalar_response_quota_and_timeout_use_shared_transport() {
+    let server = mock(200, score_response().to_string(), "", Duration::ZERO, true);
+    let mut c = config(&server.endpoint);
+    c.max_response_bytes = 20;
+    let r = JevClient::new(c).unwrap().decide_score(
+        &score_request(),
+        &ScorePolicy::default(),
+        Observation::default,
+    );
+    assert_eq!(r.adapter_error, Some(Error::ResponseTooLarge));
+    assert_eq!(server.worker.join().unwrap(), 1);
+    let server = mock(
+        200,
+        noul_response(0.98).to_string(),
+        "",
+        Duration::from_millis(800),
+        false,
+    );
+    let mut c = config(&server.endpoint);
+    c.timeout = Duration::from_millis(200);
+    c.connect_timeout = c.timeout;
+    let r = JevClient::new(c).unwrap().decide_noul(
+        &predicate_request(),
+        &PredicatePolicy::default(),
+        Observation::default,
+    );
+    assert_eq!(r.core.decision, Decision::Failed(Failure::TimedOut));
+    assert_eq!(r.adapter_error, Some(Error::TimedOut));
+    assert_eq!(server.worker.join().unwrap(), 1);
 }

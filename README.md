@@ -1,6 +1,6 @@
 # rust-jev
 
-Synchronous TypeSafe Jev Choice HTTP adapter for
+Synchronous TypeSafe Jev Noul, Choice and Score HTTP adapter for
 [RustDecision](https://github.com/SoundBlaster/rust-decision). Credentials,
 transport, native wire types and provenance stay here; numerical validation,
 local enum mapping and acceptance policy stay in RustDecision.
@@ -60,7 +60,7 @@ bodies. The adapter performs no logging; reports contain model/request metadata
 and local application values, so applications own their logging policy.
 
 The current native Choice schema has no explicit refusal variant. Unknown answer
-types fail closed; no OpenAI refusal shape is invented. Noul, Score, batch,
+types fail closed; no OpenAI refusal shape is invented. Batch,
 model discovery and OpenAI Decisions remain separate future contracts.
 
 Use this blocking client on a synchronous thread, including construction/drop.
@@ -68,6 +68,44 @@ Boundary observations can cancel before HTTP and on return, but cannot interrupt
 an in-flight blocking call. HTTP timeout bounds transport; no async cancellation
 capability is advertised. One backend invocation does not guarantee one network
 request: locally rejected wire requests perform zero HTTP sends.
+
+## Supported question types
+
+| TypeSafe wire | Rust operation | Result |
+| --- | --- | --- |
+| Noul | `decide_noul` / `decide_predicate` | `JevReport<bool>` |
+| Choice | existing `decide` | `JevReport<T>` with local typed option mapping |
+| Score | `decide_score` | `JevReport<f64>` with the native expected score |
+
+All three send one named question through the same bounded HTTP transport and
+retain per-operation metadata/errors. `NoulRequest` / `NoulPolicy` are native-name
+aliases for RustDecision's `PredicateRequest` / `PredicatePolicy`.
+
+Predicate criteria are optional true/false text descriptions. Noul has a native
+probability of yes and no separate confidence. Inclusive caller thresholds accept
+false/true; the gap abstains. Default thresholds 0.1/0.9 are configurable policies,
+not an accuracy guarantee. `report.prediction` retains the native
+probability/distribution and confidence, including on abstention or numeric
+validation failure. Its presence alone does not authorize acceptance; use
+`report.core.decision`. Skipped calls never reuse prior evidence.
+
+Score criteria are an ordered text rubric, with levels starting at zero. The
+adapter verifies the returned legend matches every requested level/description;
+RustDecision checks exact probability coverage, normalization, expected-score
+consistency, confidence and optional score/confidence bounds. Missing native
+Score confidence is malformed. Core epsilon defaults to 1e-6 and can be configured
+up to 0.001 for normalization/expected-score checks. There is no rounding or repair.
+
+State Text/Json modes, duplicates, byte quotas, total timeout, single invocation,
+cancellation boundaries and provenance apply to all types. OpenAI Predicate is a
+separate wire contract; this library sends TypeSafe `noul`, not an OpenAI request.
+Mixed batch remains a separate future API.
+
+```rust
+use rust_jev::{NoulRequest, NoulPolicy, rust_decision::{ScoreRequest, ScorePolicy}};
+// client.decide_noul(&noul_request, &NoulPolicy::default(), Observation::default);
+// client.decide_score(&score_request, &ScorePolicy::default(), Observation::default);
+```
 
 ## Validation
 
@@ -90,6 +128,13 @@ For one explicitly opted-in, potentially billable smoke request:
 # Set TYPESAFE_API_KEY and TYPESAFE_MODEL in your environment/secret manager.
 cargo run --locked --example live_choice -- --live
 # For a gateway, additionally set JEV_ENDPOINT to its full endpoint URL.
+```
+
+For the two new primitives, an explicit probe sends exactly two requests
+(one Noul and one Score) through the configured endpoint:
+
+```sh
+cargo run --locked --example live_primitives -- --live
 ```
 
 No live requests are made by tests or builds. The probe prints safe decision

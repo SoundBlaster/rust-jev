@@ -658,7 +658,7 @@ dependencies = [
 [[package]]
 name = "rust-decision"
 version = "0.1.0"
-source = "git+https://github.com/SoundBlaster/rust-decision?rev=6fd0092a63cd231df95dd9607e4290b877c96390#6fd0092a63cd231df95dd9607e4290b877c96390"
+source = "git+https://github.com/SoundBlaster/rust-decision?rev=6964ab79a25f98ca99f7e3c1d603394e72cd2677#6964ab79a25f98ca99f7e3c1d603394e72cd2677"
 dependencies = [
  "specification-core",
 ]

@@ -1,9 +1,9 @@
 # RustJev adapter contract proposal
 
-Status: initial synchronous Choice adapter implemented, 2026-10-08.
-The implementation follows this contract for one text Choice and bounded HTTP;
+Status: synchronous Noul, Choice and Score adapters implemented, 2026-10-08.
+The implementation follows this contract for single text-description questions and bounded HTTP;
 see [native mapping evidence](native-choice-wire.md) for the current wire subset.
-Batch, additional primitives and async cancellation remain future work.
+Batch and async cancellation remain future work.
 
 Design baseline: theoretical preparation, 2026-10-07. Package name: `rust-jev`; Rust import: `rust_jev`.
 
@@ -95,6 +95,6 @@ Its proposal must not be represented as completed support in Rust or Python.
    opportunity and concern_kind independently, review authority and S/U.
    Design batch semantics first if required for current two-question parity.
 
-Noul, Score and additional execution modes need follow-up contracts. Confidence
+Noul and Score use the [scalar core contract](https://github.com/SoundBlaster/rust-decision/blob/6964ab79a25f98ca99f7e3c1d603394e72cd2677/docs/scalar-contract.md). Additional execution modes need follow-up contracts. Confidence
 thresholds are caller policies evaluated on labeled data; RustJev supplies no
 universal threshold or automatic fallback provider.
