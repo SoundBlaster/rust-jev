@@ -95,6 +95,6 @@ Its proposal must not be represented as completed support in Rust or Python.
    opportunity and concern_kind independently, review authority and S/U.
    Design batch semantics first if required for current two-question parity.
 
-Noul and Score use the [scalar core contract](https://github.com/SoundBlaster/rust-decision/blob/6964ab79a25f98ca99f7e3c1d603394e72cd2677/docs/scalar-contract.md). Additional execution modes need follow-up contracts. Confidence
+Noul and Score use the [scalar core contract](https://github.com/SoundBlaster/rust-decision/blob/ce6665ab6c4c85e68b8596c92ede009fc8fc7f45/docs/scalar-contract.md). Additional execution modes need follow-up contracts. Confidence
 thresholds are caller policies evaluated on labeled data; RustJev supplies no
 universal threshold or automatic fallback provider.
