@@ -1,7 +1,11 @@
 # RustJev adapter contract proposal
 
-Status: theoretical preparation, 2026-10-07. No client is implemented by this
-document. Package name: `rust-jev`; Rust import: `rust_jev`.
+Status: initial synchronous Choice adapter implemented, 2026-10-08.
+The implementation follows this contract for one text Choice and bounded HTTP;
+see [native mapping evidence](native-choice-wire.md) for the current wire subset.
+Batch, additional primitives and async cancellation remain future work.
+
+Design baseline: theoretical preparation, 2026-10-07. Package name: `rust-jev`; Rust import: `rust_jev`.
 
 ## Responsibility and dependency
 
