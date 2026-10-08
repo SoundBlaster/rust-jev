@@ -25,8 +25,10 @@ Default HTTP timeout is 10 seconds, connect timeout 5 seconds; both must be
 positive and connect timeout must not exceed HTTP timeout. Configured HTTP
 limits are at most 300 seconds and 16 MiB per request/response, with 1 MiB body
 limits by default. Wire byte quota is enforced before send and while reading,
-with or without Content-Length. Transport timeout includes response-body reading,
-not serialization or all CPU/core work. No retries, redirects or automatic
+with or without Content-Length. A request-level total transport timeout covers
+headers and response-body reading together, including continuously arriving
+body fragments; progress does not reset this budget. It does not cover
+serialization or all CPU/core work. No retries, redirects or automatic
 compression are enabled. HTTPS is required; the explicit `allow_loopback_http()`
 exception accepts only literal loopback IPs for local mocks.
 
@@ -77,7 +79,8 @@ cargo clippy --locked --all-targets -- -D warnings
 
 Tests use real loopback HTTP fixtures, not billable inference. They verify wire
 mapping, identity and duplicates, numerical delegation, HTTP categories,
-redirect/retry policy, timeouts before headers and during body reads, quotas,
+redirect/retry policy, timeouts before headers, stalled body reads and continuous
+body progress beyond the total budget (Content-Length and chunked), quotas,
 unknown usage and clearing metadata on skipped invocation. CI uses stable and
 Rust 1.85 with a committed lockfile and full Git SHA for RustDecision.
 

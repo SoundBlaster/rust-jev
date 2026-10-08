@@ -152,6 +152,9 @@ impl JevClient {
         let response = self
             .http
             .post(self.endpoint.clone())
+            // Blocking client timeout also applies per read. A request timeout
+            // additionally sets the inner transport's total header/body timer.
+            .timeout(self.config.timeout)
             .header(header::AUTHORIZATION, self.config.auth())
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/json")

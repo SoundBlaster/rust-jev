@@ -445,6 +445,66 @@ fn times_out_while_reading_response_body() {
     worker.join().unwrap();
 }
 #[test]
+fn total_timeout_includes_headers_and_continuously_progressing_body() {
+    for chunked in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            read_request(&mut stream);
+            let body = response().to_string();
+            // Both the header delay and each read delay fit within the budget.
+            // Only a timer covering the entire request rejects this response.
+            thread::sleep(Duration::from_millis(200));
+            let encoding = if chunked {
+                "Transfer-Encoding: chunked\r\n".into()
+            } else {
+                format!("Content-Length: {}\r\n", body.len())
+            };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\n{encoding}Connection: close\r\n\r\n"
+            )
+            .unwrap();
+            stream.flush().unwrap();
+            for part in body.as_bytes().chunks(8) {
+                thread::sleep(Duration::from_millis(80));
+                let result = if chunked {
+                    write!(stream, "{:x}\r\n", part.len())
+                        .and_then(|_| stream.write_all(part))
+                        .and_then(|_| stream.write_all(b"\r\n"))
+                } else {
+                    stream.write_all(part)
+                };
+                if result.and_then(|_| stream.flush()).is_err() {
+                    return;
+                }
+            }
+            if chunked {
+                let _ = stream.write_all(b"0\r\n\r\n");
+            }
+        });
+        let mut c = config(&endpoint);
+        c.timeout = Duration::from_millis(600);
+        c.connect_timeout = c.timeout;
+        let report =
+            JevClient::new(c)
+                .unwrap()
+                .decide(&request(), &Policy::default(), Observation::default);
+        worker.join().unwrap();
+        assert_eq!(report.adapter_error, Some(Error::TimedOut));
+        assert_eq!(report.core.decision, Decision::Failed(Failure::TimedOut));
+        assert_eq!(report.core.invocations, 1);
+        assert!(report.metadata.is_none());
+    }
+}
+#[test]
 fn malformed_explicit_state_and_duplicate_answers_are_rejected() {
     for state in ["null", "true", "123", r#"{"code":1,"code":2}"#] {
         let mut c = config("http://127.0.0.1:1/");
