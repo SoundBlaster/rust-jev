@@ -30,3 +30,18 @@ question API; a separate batch contract is required.
 The current Jev4Mellea `providers/typesafe.py` and Choice fixtures informed the
 payload and separate request header mapping. Its checkout was read only; no
 Python files or configuration were changed.
+
+## Noul and Score extension
+
+Verified against the same official TypeSafe schema. All operations retain the
+single named-question envelope, explicit state encoding and transport bounds.
+
+- Noul request: `type: noul`, text instructions, optional true/false text criteria.
+  Answer: `type: noul`, numeric `noul` probability. No native confidence field.
+  Maps to RustDecision Predicate; native-name aliases are convenience only.
+- Score request: `type: score`, text instructions and ordered text criteria array.
+  Answer: numeric `score`, required numeric confidence, index-keyed probabilities
+  and a legend mapping each index to its exact requested text description.
+  Core verifies finite ranges, distribution normalization and weighted-average
+  consistency; adapter verifies identities, legend and wire shapes.
+- This does not implement OpenAI Predicate wire format or a mixed batch.
